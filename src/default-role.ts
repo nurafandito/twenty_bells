@@ -2,6 +2,7 @@ import {
   defineApplicationRole,
   RowLevelPermissionPredicateOperand,
   STANDARD_OBJECT_UNIVERSAL_IDENTIFIERS,
+  SystemPermissionFlag,
 } from 'twenty-sdk/define';
 
 import {
@@ -34,6 +35,10 @@ export default defineApplicationRole({
   canUpdateAllObjectRecords: false,
   canSoftDeleteAllObjectRecords: false,
   canDestroyAllObjectRecords: false,
+  // `/rest/metadata/objects` (object/field labels, used to name custom objects
+  // and render SELECT option colours) 403s without this — record-read access
+  // alone does not cover metadata reads.
+  permissionFlagUniversalIdentifiers: [SystemPermissionFlag.DATA_MODEL],
   objectPermissions: [
     {
       objectUniversalIdentifier: FEED_READ_STATE_OBJECT_UNIVERSAL_IDENTIFIER,

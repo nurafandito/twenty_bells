@@ -12,6 +12,12 @@ All notable changes to this application are documented in this file.
   `targetFeedReadStateId` instead of by name prefix. Bumped the floor to
   2.43.0, the version this was verified against — the exact version the new
   snapshot field first appeared in, somewhere after 2.35, is unconfirmed.
+- Fixed `/rest/metadata/objects` (object/field labels — custom object names,
+  SELECT option colours) 403ing with `PERMISSION_DENIED`: the role never
+  requested the `DATA_MODEL` permission flag that metadata reads require,
+  so it silently degraded ("Some of this could not be loaded") on every tab
+  from the day the failure-visibility work landed, regardless of server
+  version.
 
 ## 0.1.0
 
