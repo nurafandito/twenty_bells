@@ -65,10 +65,14 @@ const FEED_PAGE_SIZE = 20;
 
 // Service rows of our own object are excluded by the server, so the count it
 // returns is the same number the panel would show — no silent discrepancy.
+//
+// Filtered by target rather than by `name`: Twenty dropped the flat `name`
+// column from timelineActivity (gone by 2.35, twenty_bells#1) and the RAW_JSON
+// replacement only supports `is`/`like`, not `startsWith`.
 const feedFilter = () =>
   `happensAt[gte]:${new Date(
     Date.now() - FEED_WINDOW_DAYS * 24 * 60 * 60 * 1000,
-  ).toISOString()},not(name[startsWith]:${HIDDEN_EVENT_PREFIX})`;
+  ).toISOString()},targetFeedReadStateId[is]:NULL`;
 // Links are looked up for the whole page of records, and a record can carry
 // several — so they get a wider budget than the page itself.
 const LINK_PAGE_SIZE = Math.min(FEED_LIMIT * 2, 200);
@@ -79,9 +83,41 @@ const LINK_PAGE_SIZE = Math.min(FEED_LIMIT * 2, 200);
 const BULK_THRESHOLD = 5;
 const BULK_WINDOW_MS = 5 * 60 * 1000;
 
-// The read-state object is written by this very panel, so its own events would
-// otherwise show up in the feed as noise about the feed.
-const HIDDEN_EVENT_PREFIX = 'feedReadState.';
+// Attaching a file emits no timeline event at all — verified against a live
+// instance. Declared here (rather than by `toAttachmentEvent`, further down,
+// which sets it) so the helpers just below can special-case it.
+const ATTACHMENT_EVENT = 'linked-attachment.created';
+
+// created/updated/deleted/… used to be the second half of a dotted `name`
+// like `note.updated`; it now lives on `timelineActivityTypeSnapshot`.
+const getSnapshot = (item: TimelineRecord) =>
+  (item.timelineActivityTypeSnapshot ?? null) as {
+    name?: string;
+    action?: string;
+  } | null;
+
+const getEventAction = (item: TimelineRecord): string =>
+  item.name === ATTACHMENT_EVENT ? 'created' : (getSnapshot(item)?.action ?? '');
+
+// `<kind>Linked` / `<kind>Unlinked` (`noteLinked`, `taskLinked`, …) replaces
+// the old `linked-<kind>.<action>` name.
+const getLinkedKind = (item: TimelineRecord): string | null => {
+  if (item.name === ATTACHMENT_EVENT) {
+    return 'attachment';
+  }
+
+  const name = getSnapshot(item)?.name ?? '';
+
+  if (name.endsWith('Linked')) {
+    return name.slice(0, -'Linked'.length);
+  }
+
+  if (name.endsWith('Unlinked')) {
+    return name.slice(0, -'Unlinked'.length);
+  }
+
+  return null;
+};
 
 const ACTION_LABELS = {
   created: msg('created'),
@@ -189,11 +225,10 @@ const cursorFor = (item: TimelineRecord) =>
   btoa(JSON.stringify({ happensAt: item.happensAt, id: item.id }));
 
 const isVisibleEvent = (item: TimelineRecord) => {
-  if (typeof item.name !== 'string') {
-    return true;
-  }
-
-  if (item.name.startsWith(HIDDEN_EVENT_PREFIX)) {
+  if (
+    typeof item.targetFeedReadStateId === 'string' &&
+    item.targetFeedReadStateId !== ''
+  ) {
     return false;
   }
 
@@ -201,7 +236,7 @@ const isVisibleEvent = (item: TimelineRecord) => {
   // value on both sides — leaves a card with a heading, a chip and nothing
   // underneath. Something happened to the record, but there is nothing in it
   // for a reader. Creations carry no diff at all by design and stay.
-  if (item.name.endsWith('.updated')) {
+  if (getEventAction(item) === 'updated') {
     return extractDiff(item.properties).length > 0;
   }
 
@@ -305,8 +340,6 @@ const resolveTarget = (item: TimelineRecord): ResolvedTarget | null => {
 // through — a tombstone, not news.
 const pointsAtALivingRecord = (item: TimelineRecord) =>
   resolveTarget(item) !== null;
-
-const ATTACHMENT_EVENT = 'linked-attachment.created';
 
 // Attaching a file emits no timeline event at all — verified against a live
 // instance. Attachments carry their own `target<Object>Id` and `createdAt`,
@@ -1281,18 +1314,24 @@ const ActivityFeed = () => {
         return;
       }
 
+      // `name[eq]:task.updated` no longer resolves (twenty_bells#1) — filtered
+      // by target only, then narrowed to updates client-side.
       const editsResponse = await client.get<{
         data?: { timelineActivities?: TimelineRecord[] };
       }>('/rest/timelineActivities', {
         query: {
-          filter: `name[eq]:task.updated,targetTaskId[in]:[${ids.join(',')}]`,
+          filter: `targetTaskId[in]:[${ids.join(',')}]`,
           limit: LINK_PAGE_SIZE,
           depth: 0,
           order_by: 'happensAt[DescNullsLast]',
         },
       });
 
-      setTaskEdits((editsResponse.data?.timelineActivities ?? []).reverse());
+      setTaskEdits(
+        (editsResponse.data?.timelineActivities ?? [])
+          .filter((edit) => getEventAction(edit) === 'updated')
+          .reverse(),
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -1315,11 +1354,13 @@ const ActivityFeed = () => {
             order_by: 'createdAt[DescNullsLast]',
           },
         }),
+        // `name[eq]:note.updated` no longer resolves (twenty_bells#1) —
+        // narrowed to updates client-side instead.
         client.get<{ data?: { timelineActivities?: TimelineRecord[] } }>(
           '/rest/timelineActivities',
           {
             query: {
-              filter: 'name[eq]:note.updated',
+              filter: 'targetNoteId[is]:NOT_NULL',
               limit: TAB_PAGE_SIZE,
               depth: 0,
               // Newest first, because that is the end the limit cuts. Asking
@@ -1334,7 +1375,11 @@ const ActivityFeed = () => {
       setNotes(notesResponse.data?.notes ?? []);
       // Threads are read oldest-first downstream, so the page goes back the
       // way it came.
-      setNoteEdits((editsResponse.data?.timelineActivities ?? []).reverse());
+      setNoteEdits(
+        (editsResponse.data?.timelineActivities ?? [])
+          .filter((edit) => getEventAction(edit) === 'updated')
+          .reverse(),
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -1495,9 +1540,9 @@ const ActivityFeed = () => {
     // ones that matter most — the standalone ones — are filed under nothing at
     // all. Judging them by ownership kept every comment out of the feed, so
     // they are relevant to everyone, like a message on a board.
-    const eventSubject = String(item.name ?? '').split('.')[0];
+    const targetIsNote = resolveTarget(item)?.objectNameSingular === 'note';
 
-    if (eventSubject === 'note' || eventSubject === 'linked-note') {
+    if (targetIsNote || getLinkedKind(item) === 'note') {
       return true;
     }
 
@@ -1656,7 +1701,9 @@ const ActivityFeed = () => {
   // Several events on the same record collapse into one row: the newest is
   // shown, the rest hide behind a counter.
   const describeBulk = (item: TimelineRecord) => {
-    const [subject = '', action = ''] = String(item.name ?? '').split('.');
+    const linkedKind = getLinkedKind(item);
+    const subject = linkedKind !== null ? `linked-${linkedKind}` : '';
+    const action = getEventAction(item);
     const target = resolveTarget(item);
 
     return {
@@ -1857,25 +1904,23 @@ const ActivityFeed = () => {
   };
 
   const describe = (item: TimelineRecord) => {
-    const eventName = typeof item.name === 'string' ? item.name : '';
-    const [eventSubject = '', action = ''] = eventName.split('.');
+    const action = getEventAction(item);
     const target = resolveTarget(item);
     // Events made through the API carry no workspaceMember — the ACTOR in
     // `createdBy` is the only attribution there is.
     const author =
       readDisplayName(item.workspaceMember) || readDisplayName(item.createdBy);
 
-    // `linked-note.created` and friends describe something attached to the
-    // target record rather than a change of the record itself.
-    const linkedKind = eventSubject.startsWith('linked-')
-      ? eventSubject.slice('linked-'.length)
-      : null;
+    // A `noteLinked`/`taskLinked`/… event (formerly `linked-note.created` and
+    // friends) describes something attached to the target record rather than
+    // a change of the record itself.
+    const linkedKind = getLinkedKind(item);
     const linkedName =
       typeof item.linkedRecordCachedName === 'string'
         ? item.linkedRecordCachedName
         : '';
 
-    const objectNameSingular = target?.objectNameSingular ?? eventSubject;
+    const objectNameSingular = target?.objectNameSingular ?? linkedKind ?? '';
 
     return {
       target,
@@ -3133,7 +3178,7 @@ const ActivityFeed = () => {
           ];
     const verbMessage =
       LINKED_ACTION_LABELS[
-        String(head.name ?? '').split('.')[1] as keyof typeof LINKED_ACTION_LABELS
+        getEventAction(head) as keyof typeof LINKED_ACTION_LABELS
       ];
     const bulkLabel =
       linkedMessage !== undefined ? t(linkedMessage) : described.objectLabel;
