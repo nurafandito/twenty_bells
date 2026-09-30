@@ -1,6 +1,11 @@
 export const APP_DISPLAY_NAME = 'The Bell';
 export const APP_DESCRIPTION = 'Activity feed, team notes and overdue tasks';
-export const APPLICATION_UNIVERSAL_IDENTIFIER = '95427093-8188-4051-8f40-a94930b08548';
+// Own identifier for our patched fork's deployment, separate from upstream's
+// 95427093-8188-4051-8f40-a94930b08548 — that identifier is registered under
+// the original npm publisher and cannot be claimed/developed on from here.
+// Switch back to the upstream id once frasimah/twenty_bells#2 is merged and
+// republished, and reinstall that instead of this fork.
+export const APPLICATION_UNIVERSAL_IDENTIFIER = 'e4d07362-8e32-49c0-b710-c6250abefcfe';
 export const DEFAULT_ROLE_UNIVERSAL_IDENTIFIER = 'c42e0f90-a77f-41cb-af0e-60273784d211';
 export const ACTIVITY_FEED_FRONT_COMPONENT_UNIVERSAL_IDENTIFIER =
   'f3947d6f-f605-43a3-817e-281216b367b6';
